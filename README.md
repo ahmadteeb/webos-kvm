@@ -272,7 +272,7 @@ The image's key map (`/usr/share/webos-keymap/webos-keymap.qmap`) is a normal PC
 |---|---|
 | **Super / Windows / Meta** (left) | Home: opens or closes the home screen (the only key the compositor handles; confirmed in the VM) |
 | **Mouse click** | Tap (the USB tablet is an absolute pointer) |
-| **Arrow keys**, **Enter**, **Tab** | Move focus and select in webOS apps 
+| **Arrow keys**, **Enter** | Move focus and select inside webOS apps (tested in Settings). The home-screen dock does not react to keys: use the mouse there |
 
 Read from the key map file in the image; I only pressed Super in the running VM.
 
