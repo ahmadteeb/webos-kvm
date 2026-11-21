@@ -124,6 +124,7 @@ Copy the disk image to the default libvirt storage pool path expected by `webos.
 
 ```bash
 sudo cp webos-kvm-*.qcow2 /var/lib/libvirt/images/webos.qcow2
+virsh -c qemu:///system pool-refresh default    # lets libvirt (and virt-manager) know about the new disk
 ```
 
 ---

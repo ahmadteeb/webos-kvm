@@ -170,7 +170,8 @@ jobs:
           wget https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/define-vm.sh
 
           tar -xjf webos-kvm-@TAG@.tar.bz2
-          sudo cp webos-kvm-@TAG@.qcow2 /var/lib/libvirt/images/webos.qcow2
+          sudo mv webos-kvm-@TAG@.qcow2 /var/lib/libvirt/images/webos.qcow2
+          virsh -c qemu:///system pool-refresh default    # lets libvirt and virt-manager know about the disk
 
           # defines the VM and picks a working GPU for OpenGL automatically
           bash define-vm.sh webos.xml
