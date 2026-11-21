@@ -1,7 +1,9 @@
 [Unit]
 Description=webos-kvm: display config for virtio-gpu
-After=surface-manager-daemon.service
-Wants=surface-manager-daemon.service
+DefaultDependencies=no
+Requires=configd.service
+After=configd.service
+Before=surface-manager-daemon.service
 
 [Service]
 Type=oneshot

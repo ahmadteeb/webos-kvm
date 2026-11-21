@@ -1,30 +1,19 @@
 #!/bin/sh
-# Tells surface-manager the geometry/format virtio-gpu accepts. Runs on EVERY boot: configd does not
-# keep the setting across reboots (a "run once" stamp left later boots with a stuck text console).
-# Size: WEBOS_KVM_WIDTH/HEIGHT if set at build time, else the preferred mode the virtual display
-# reports at boot (first line of the DRM connector's "modes"), else 1920x1080.
-W="@W@"; H="@H@"; OUT="@OUT@"
+# Tells surface-manager the geometry/format virtio-gpu accepts (without it page flips fail and the
+# screen stays on the text console). Runs on every boot, before the compositor starts, because configd
+# does not keep the setting across reboots. Size = the virtual display's preferred mode.
+# wait for the virtual display (virtio_gpu)
+j=0; while [ $j -lt 30 ] && ! ls /sys/class/drm/card0-*/modes >/dev/null 2>&1; do j=$((j + 1)); sleep 1; done
 C=$(ls -d /sys/class/drm/card0-*/ 2>/dev/null | head -n 1)
-if [ -n "$C" ]; then
-    M=$(head -n 1 "${C}modes" 2>/dev/null)
-    [ -z "$W" ] && W=${M%x*}
-    [ -z "$H" ] && H=${M#*x}
-    [ -z "$OUT" ] && OUT=$(basename "$C" | sed 's/^card0-//; s/-//g')
-fi
-case "$W$H" in *[!0-9]*|"") W=1920; H=1080 ;; esac
-[ -z "$OUT" ] && OUT=Virtual1
-GEOM="${W}x${H}+0+0r0s1"
-BODY='{"configs":{"com.webos.surfacemanager.compositorGeometry":"'$GEOM'","com.webos.surfacemanager.displayConfig":[{"device":"/dev/dri/card0","hwcursor":false,"outputs":[{"name":"'$OUT'","geometry":"'$GEOM'","mode":"'${W}x${H}'","format":"xrgb8888"}]}]}}'
+M=$(head -n 1 "${C}modes" 2>/dev/null)
+case "$M" in [0-9]*x[0-9]*) ;; *) M=1920x1080 ;; esac
+OUT=$(basename "${C:-card0-Virtual-1}" | sed 's/^card0-//; s/-//g')
+GEOM="${M}+0+0r0s1"
+BODY='{"configs":{"com.webos.surfacemanager.compositorGeometry":"'$GEOM'","com.webos.surfacemanager.displayConfig":[{"device":"/dev/dri/card0","hwcursor":false,"outputs":[{"name":"'$OUT'","geometry":"'$GEOM'","mode":"'$M'","format":"xrgb8888"}]}]}}'
 i=0
 while [ $i -lt 60 ]; do
-    RET="$(luna-send -n 1 -a com.webos.surfacemanager luna://com.webos.service.config/setConfigs "$BODY" 2>&1)"
-    case "$RET" in
-        *'"returnValue":true'*)
-            systemctl restart surface-manager-daemon.service
-            exit 0 ;;
-    esac
-    i=$((i + 1))
-    sleep 2
+    luna-send -n 1 -a com.webos.surfacemanager luna://com.webos.service.config/setConfigs "$BODY" 2>&1 | grep -q '"returnValue":true' && exit 0
+    i=$((i + 1)); sleep 2
 done
-logger -t webos-kvm "setConfigs failed: $RET"
+logger -t webos-kvm "setConfigs failed"
 exit 1

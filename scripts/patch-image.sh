@@ -27,9 +27,8 @@ E=$R/etc/surface-manager.d/eglfs-integrations/eglfs_kms_webos.env
 grep -q 'QT_QPA_EGLFS_KMS_ATOMIC=1' "$E"   # fail loudly if the image layout changed
 sed -i 's/QT_QPA_EGLFS_KMS_ATOMIC=1/QT_QPA_EGLFS_KMS_ATOMIC=0/' "$E"
 
-# 3. first-boot display service (empty values = detect size at boot)
+# 3. display service (runs before the compositor on every boot)
 install -m 0755 "$F/webos-kvm-display" "$R/usr/sbin/webos-kvm-display"
-sed -i 's/@W@//; s/@H@//; s/@OUT@//' "$R/usr/sbin/webos-kvm-display"
 install -m 0644 "$F/webos-kvm-display.service" "$R/lib/systemd/system/webos-kvm-display.service"
 ln -sf /usr/lib/systemd/system/webos-kvm-display.service "$R/etc/systemd/system/multi-user.target.wants/webos-kvm-display.service"
 

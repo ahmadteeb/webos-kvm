@@ -237,11 +237,6 @@ source oe-init-build-env
 
 # Add meta-webos-kvm to your layer configuration
 bitbake-layers add-layer build-webos/meta-webos-kvm
-
-# Screen resolution is detected at boot from the virtual display (nothing to configure).
-# To force a fixed size instead, add to conf/local.conf:
-#   WEBOS_KVM_WIDTH = "1920"
-#   WEBOS_KVM_HEIGHT = "1080"
 ```
 
 #### 4. Run the Build
