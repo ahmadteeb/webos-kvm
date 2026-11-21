@@ -1,0 +1,122 @@
+<!--
+  webos-kvm: libvirt domain for webOS Open Source Edition (qemux86-64 image).
+
+  Import into virt-manager:
+      virsh -c qemu:///system define libvirt/webos.xml
+  or, better, scripts/define-vm.sh (it also picks a working GPU render node).
+  The VM then shows up in virt-manager under "QEMU/KVM".
+
+  Why the unusual choices (all of them were needed to get a working GUI):
+    * IDE disk on the i440FX machine ("pc")  -> the guest sees it as /dev/sda.
+        The image's boot setup waits for /dev/sda1; a VirtIO disk (/dev/vda)
+        drops the guest into emergency mode.
+    * BIOS firmware (SeaBIOS, the default)   -> the image boots with SYSLINUX, not UEFI.
+    * VirtIO video + 3D acceleration         -> the kernel only has drivers for virtio_gpu
+        and bochs here; the VMware vmwgfx driver refuses QEMU's emulated VMware card.
+        webOS needs real GL (virgl): software rendering crashes the compositor/web runtime.
+    * SPICE with GL (rendernode pinned)      -> virgl rendering shown by virt-manager without CPU readback.
+        egl-headless + VNC also works but the VNC encoder maxes out one CPU core (laggy UI/video).
+    * USB tablet                             -> absolute pointer, so no mouse grab is needed.
+        webOS draws no cursor for it; clicks still work like taps.
+-->
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+  <name>webos</name>
+  <title>webOS Open Source Edition (qemux86-64)</title>
+  <description>webOS OSE emulator image. Display: SPICE with OpenGL (virt-manager). Serial console: virsh console webos</description>
+
+  <memory unit='MiB'>4096</memory>
+  <currentMemory unit='MiB'>4096</currentMemory>
+  <vcpu placement='static'>4</vcpu>
+
+  <os>
+    <type arch='x86_64' machine='pc'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+
+  <cpu mode='host-passthrough' check='none'/>
+
+  <clock offset='utc'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+  </clock>
+
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+
+    <!-- Must be IDE (or SATA) so it appears as /dev/sda inside the guest. -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/var/lib/libvirt/images/webos.qcow2'/>
+      <target dev='hda' bus='ide'/>
+    </disk>
+
+    <controller type='usb' index='0' model='qemu-xhci'/>
+
+    <interface type='network'>
+      <source network='default'/>
+      <model type='virtio'/>
+    </interface>
+
+    <!-- Login console: virsh console webos  (user: root, no password on the standard image) -->
+    <serial type='pty'>
+      <target type='isa-serial' port='0'>
+        <model name='isa-serial'/>
+      </target>
+    </serial>
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+
+    <!-- Absolute pointer: works without grabbing the mouse. -->
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+
+    <!-- Console: SPICE with OpenGL. virgl output stays on the GPU (no CPU compression as with VNC), so
+         navigation and video are smooth. virt-manager opens it with its built-in viewer.
+         GPU used for 3D: scripts/define-vm.sh picks the right render node automatically (skips NVIDIA) and
+         defines the VM. Editing by hand: "eglInitialize failed: EGL_NOT_INITIALIZED" means the node below is
+         the NVIDIA GPU; use the Intel/AMD "-render" link from: ls -l /dev/dri/by-path/ -->
+    <graphics type='spice'>
+      <listen type='none'/>
+      <image compression='off'/>
+      <gl enable='yes' rendernode='/dev/dri/renderD128'/>
+    </graphics>
+
+    <!-- Sound card. The kernel in the image has snd-intel8x0 (AC97), not HDA.
+         A system VM runs as another user and cannot reach your desktop audio socket, so it connects to
+         PulseAudio/PipeWire over loopback TCP. Open it once (and add it to pipewire-pulse.conf.d to keep it):
+           pactl load-module module-native-protocol-tcp port=4713 listen=127.0.0.1 auth-ip-acl=127.0.0.1
+         Without that socket the VM fails to start ("Connection refused"); for no sound use type='none'. -->
+    <sound model='ac97'>
+      <audio id='1'/>
+    </sound>
+    <audio id='1' type='pulseaudio' serverName='tcp:127.0.0.1:4713'/>
+
+    <video>
+      <model type='virtio' heads='1' primary='yes'>
+        <acceleration accel3d='yes'/>
+      </model>
+    </video>
+
+    <memballoon model='none'/>
+  </devices>
+
+  <!-- Guest screen size (the virtual display's preferred mode; webOS picks it up at boot).
+       Change both numbers to match your window, e.g. 1920x1080 for a full-screen console. -->
+  <qemu:commandline>
+    <qemu:arg value='-global'/>
+    <qemu:arg value='virtio-vga-gl.xres=1280'/>
+    <qemu:arg value='-global'/>
+    <qemu:arg value='virtio-vga-gl.yres=720'/>
+  </qemu:commandline>
+</domain>

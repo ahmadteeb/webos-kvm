@@ -1,0 +1,210 @@
+name: Build webOS image with KVM fixes
+
+# Builds the webOS OSE qemux86-64 image from a build-webos release tag, with meta-webos-kvm
+# added, and publishes the qcow2 as a release of THIS repository.
+#
+# Does not rebuild webOS: it takes upstream's prebuilt webos-ose-*-qemux86-64.tar.bz2 release asset,
+# applies the fixes with scripts/patch-image.sh and converts it to qcow2 (minutes, free runner).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "build-webos release tag (empty = latest upstream release), e.g. v2.28.0"
+        required: false
+        default: ""
+      force:
+        description: "rebuild even if this repo already has a release for the tag"
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: "17 3 * * *" # daily: build only if upstream's latest release has no release in this repo
+  push:
+    branches: [main]
+    paths: [".github/workflows/build-release.yml"] # first push starts the first check
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-webos
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - name: Resolve upstream tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG="$(gh api repos/webosose/build-webos/releases/latest --jq .tag_name)"
+          fi
+          # make sure the tag exists upstream
+          gh api "repos/webosose/build-webos/git/ref/tags/$TAG" --jq .ref >/dev/null
+          SKIP=false
+          if [ "$FORCE" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            SKIP=true
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+          echo "upstream tag: $TAG (skip=$SKIP)"
+          if [ "$SKIP" = "true" ]; then
+            echo "::notice::Latest upstream release $TAG already has a release in this repo. Nothing to build."
+          else
+            echo "::notice::No release for $TAG in this repo yet. Building it."
+          fi
+
+  fetch:
+    name: 1. Fetch upstream image
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and extract prebuilt qemux86-64 image
+        run: |
+          gh release download "$TAG" --repo webosose/build-webos --pattern 'webos-ose-*-qemux86-64.tar.bz2'
+          tar -xjf webos-ose-*-qemux86-64.tar.bz2 ./webos-image-qemux86-64.wic.vmdk
+          rm webos-ose-*-qemux86-64.tar.bz2
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upstream-vmdk
+          path: webos-image-qemux86-64.wic.vmdk
+          retention-days: 1
+
+  patch:
+    name: 2. Apply KVM fixes, convert to qcow2
+    needs: [prepare, fetch]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: upstream-vmdk
+      - name: Patch
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+          sudo scripts/patch-image.sh webos-image-qemux86-64.wic.vmdk "webos-kvm-$TAG.qcow2"
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patched-qcow2
+          path: webos-kvm-${{ needs.prepare.outputs.tag }}.qcow2
+          retention-days: 1
+
+  package:
+    name: 3. Pack as tar.bz2
+    needs: [prepare, patch]
+    runs-on: ubuntu-latest
+    env:
+      NAME: webos-kvm-${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: patched-qcow2
+          path: out
+      - name: Package
+        run: |
+          cd out
+          tar -cjf "$NAME.tar.bz2" "$NAME.qcow2"
+          rm "$NAME.qcow2"
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: out/*
+          retention-days: 1
+
+  publish:
+    name: 4. Publish release
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: out
+      - name: Publish release
+        run: |
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          cat > notes.md <<'EOF'
+          # webOS OSE @TAG@ for QEMU/KVM
+
+          [webOS Open Source Edition @TAG@](https://github.com/webosose/build-webos/releases/tag/@TAG@) (`qemux86-64`)
+          with the display, KMS and OpenGL fixes from [`meta-webos-kvm`](https://github.com/${GITHUB_REPOSITORY}/tree/main/meta-webos-kvm),
+          ready to import into **virt-manager**. The screen resolution is detected at boot.
+
+          ## Files
+
+          | File | Description |
+          |---|---|
+          | `webos-kvm-@TAG@.tar.bz2` | the disk image (qcow2) |
+
+          ## Install
+
+          First install KVM and virt-manager (see the [README](https://github.com/${GITHUB_REPOSITORY}#readme) for Arch, Ubuntu/Debian, Fedora and openSUSE), and add yourself to the `libvirt` group (`sudo usermod -aG libvirt "$USER"`, then log out and in).
+
+          ```bash
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/@TAG@/webos-kvm-@TAG@.tar.bz2
+          wget https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/libvirt/webos.xml
+          wget https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/define-vm.sh
+
+          tar -xjf webos-kvm-@TAG@.tar.bz2
+          sudo cp webos-kvm-@TAG@.qcow2 /var/lib/libvirt/images/webos.qcow2
+
+          # defines the VM and picks a working GPU for OpenGL automatically
+          bash define-vm.sh webos.xml
+          ```
+
+          Then open **virt-manager**, select **webos**, press **Run** and open its console. The GUI appears after about a minute.
+
+          If a VM named `webos` already exists, run `virsh -c qemu:///system undefine webos` first.
+
+          ## Why these steps are needed
+
+          - **`libvirt` group:** the VM is managed by the system libvirt service; without the group, `virsh` and virt-manager fail with "permission denied".
+          - **`define-vm.sh` (GPU):** webOS needs OpenGL, which QEMU gets from a GPU render node. libvirt cannot choose one by itself, and on laptops with two GPUs it often picks the proprietary NVIDIA GPU, which QEMU cannot use (`egl: eglInitialize failed`). The script writes a usable Intel/AMD GPU into the VM definition.
+          - **Sound socket:** the VM runs as the `libvirt-qemu` user and cannot reach your desktop audio, so it connects to PulseAudio/PipeWire over a local-only TCP port (127.0.0.1:4713). Only programs on your own computer can use it.
+          - **IDE disk and SPICE with OpenGL (already in `webos.xml`):** the image boots from `/dev/sda` and fails in emergency mode with a VirtIO disk. SPICE with OpenGL keeps the picture on the GPU; the VNC alternative compresses every frame on one CPU core and makes the UI and video laggy.
+          - **Wait about a minute on first start:** a display service configures the compositor for the virtual GPU and restarts it, then starts the home screen.
+
+          ## Keyboard and mouse
+
+          The key map in the image is a normal PC layout plus remote-control keys. Only one key is handled by the compositor itself; every other key is passed to the app that has focus, so what it does depends on the app.
+
+          | Input | Action in webOS |
+          |---|---|
+          | **Super / Windows / Meta** (left) | Home: opens or closes the home screen (the only key the compositor handles; confirmed in the VM) |
+          | **Mouse click** | Tap (the USB tablet is an absolute pointer) |
+          | **Arrow keys**, **Enter**, **Tab** | Move focus and select in webOS apps |
+          ## Notes
+
+          - Serial login: `root`, no password (`virsh -c qemu:///system console webos`).
+          - Needs KVM and a GPU render node (`/dev/dri/renderD*`) with an Intel, AMD or nouveau driver on the host (the proprietary NVIDIA driver cannot be used).
+          - The first boot is slower: the display service configures the compositor and restarts it once.
+          - Host setup, troubleshooting and details: see the [README](https://github.com/${GITHUB_REPOSITORY}#readme).
+          EOF
+          sed -i "s/@TAG@/$TAG/g; s#\${GITHUB_REPOSITORY}#$GITHUB_REPOSITORY#g" notes.md
+          gh release create "$TAG" out/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "webOS OSE $TAG (KVM)" --notes-file notes.md

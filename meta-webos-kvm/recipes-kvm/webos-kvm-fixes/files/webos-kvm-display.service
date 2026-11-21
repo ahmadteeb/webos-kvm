@@ -1,0 +1,12 @@
+[Unit]
+Description=webos-kvm: display config for virtio-gpu
+After=surface-manager-daemon.service
+Wants=surface-manager-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/webos-kvm-display
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
